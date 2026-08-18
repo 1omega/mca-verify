@@ -1,0 +1,19 @@
+{
+  "mca_version": "0.1",
+  "log_id": "log.iondra.com/main",
+  "checkpoint_id": "cp-0001",
+  "range": {
+    "from_seq": 0,
+    "to_seq": 4
+  },
+  "merkle_root": "97f3241d1b6a301288940ac1db23b0bb383edb44f9fbb89be4c9420c59e5e3f7",
+  "prev_checkpoint_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "hash_alg": "sha-256",
+  "timestamp": "2026-01-15T12:05:00.000Z",
+  "signature": {
+    "alg": "ed25519",
+    "key_id": "log-main-2026-01",
+    "sig": "R-qOfzqzz2EO1tjyU0_1cuJApHsn2dNy0_MCXoptn9gbQ54xgu2HzQQHI-VGbZyB-eqhhfr6kl6YXAz9t6k8Cw"
+  },
+  "witnesses": []
+}

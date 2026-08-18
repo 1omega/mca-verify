@@ -1,0 +1,9 @@
+{
+  "rail_receipt": {
+    "rail": "x402",
+    "tx": "0xddd4",
+    "amount": "2.50",
+    "currency": "USD"
+  },
+  "note": "translation batch"
+}

@@ -1,0 +1,31 @@
+{
+  "name": "@mca/verify",
+  "version": "0.1.0",
+  "description": "Reference verifier for the Machine Commerce Attestation (MCA) specification, draft v0.1",
+  "type": "module",
+  "license": "Apache-2.0",
+  "bin": {
+    "mca": "src/cli.js"
+  },
+  "scripts": {
+    "test": "node test/gen-vectors.js && node --test test/verify.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "mca",
+    "attestation",
+    "machine-commerce",
+    "x402",
+    "merkle",
+    "ed25519",
+    "rfc6962",
+    "rfc8785"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/1omega/mca-verify.git"
+  },
+  "homepage": "https://iondra.com"
+}

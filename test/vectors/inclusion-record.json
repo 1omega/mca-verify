@@ -1,0 +1,23 @@
+{
+  "mca_version": "0.1",
+  "record_id": "018f3c2a-0000-7000-8000-000000000003",
+  "log_id": "log.iondra.com/main",
+  "seq": 3,
+  "timestamp": "2026-01-15T12:03:00.000Z",
+  "subject_type": "machine",
+  "subject_id": "spiffe://acme.example/agent/procurement-3",
+  "action": "commerce.payment.executed",
+  "evidence_hash": "eeba32c4ee1c684f88dd52d5c82f019e353ac2865af89a3ebeadabde73264705",
+  "prev_hash": "01888c1195cb2a797ea7673120c370a20b7c09f3fcafb948434ed4c78ad66e1f",
+  "commerce": {
+    "rail": "x402",
+    "request_hash": "b4d139474f84de50939cfc65f4aaeb0f2dbe35cf7167a00e187245f8d15a2bae",
+    "payment_hash": "4a307ff4ffee29c0540810c19f752cddab464c7fd2f8a512f28c03cb838bea9f",
+    "delivery_hash": "9b86427205a6613edca515ee441de02103401defb2569788a9f65b85f0a1cd5a",
+    "amount": {
+      "value": "2.50",
+      "currency": "USD"
+    },
+    "counterparty": "api.vendor3.example"
+  }
+}
