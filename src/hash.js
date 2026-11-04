@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createPublicKey } from "node:crypto";
 import { canonicalize } from "./canonicalize.js";
 
 /** Genesis link value: 64 zero hex chars (MCA §3, §6). */
@@ -21,4 +21,14 @@ export function hashCanonical(value) {
 export function recordHash(record) {
   const { record_hash: _omit, ...rest } = record;
   return hashCanonical(rest);
+}
+
+/**
+ * key_id for an Ed25519 public key (addendum 0.1.1): "ed25519:" followed by
+ * the first 16 lowercase hex characters of SHA-256 over the SPKI DER encoding.
+ * This is how the IONDRA reference log derives its operator key_id.
+ */
+export function keyIdFromPublicKeyPem(pem) {
+  const der = createPublicKey(pem).export({ type: "spki", format: "der" });
+  return "ed25519:" + sha256hex(der).slice(0, 16);
 }

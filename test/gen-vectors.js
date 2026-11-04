@@ -14,7 +14,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { canonicalize } from "../src/canonicalize.js";
-import { hashCanonical, recordHash, ZERO64 } from "../src/hash.js";
+import { hashCanonical, recordHash, keyIdFromPublicKeyPem, ZERO64 } from "../src/hash.js";
 import { merkleRoot, auditPath } from "../src/merkle.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -104,9 +104,38 @@ const forged = JSON.parse(JSON.stringify(checkpoint));
 forged.merkle_root = merkleRoot(chain.map(recordHash)).replace(/^./, forged.merkle_root[0] === "a" ? "b" : "a");
 writeJson("checkpoint-forged.json", forged);
 
+// ─── Witnessed checkpoint (addendum 0.1.1, spec §8) ─────────────────────────
+// An independent witness cosigns the SAME canonical bytes the operator signed.
+const witness = generateKeyPairSync("ed25519");
+const witnessPem = witness.publicKey.export({ type: "spki", format: "pem" });
+writeFileSync(join(outDir, "witness.pub.pem"), witnessPem);
+const witnessEntry = {
+  witness_id: "witness.example.org",
+  key_id: keyIdFromPublicKeyPem(witnessPem),
+  alg: "ed25519",
+  timestamp: new Date(BASE_TS + 6 * 60_000).toISOString(),
+  sig: cryptoSign(null, Buffer.from(canonicalize(cpUnsigned), "utf8"), witness.privateKey).toString("base64url"),
+};
+writeJson("checkpoint-witnessed.json", { ...checkpoint, witnesses: [witnessEntry] });
+// Bad witness: a cosignature that does not cover this checkpoint's bytes.
+const strayCp = { ...cpUnsigned, timestamp: new Date(BASE_TS + 7 * 60_000).toISOString() };
+writeJson("checkpoint-witness-forged.json", {
+  ...checkpoint,
+  witnesses: [{ ...witnessEntry, sig: cryptoSign(null, Buffer.from(canonicalize(strayCp), "utf8"), witness.privateKey).toString("base64url") }],
+});
+
 // ─── Inclusion proof for the seq 3 record ────────────────────────────────────
 writeJson("inclusion-record.json", chain[3]);
 writeJson("inclusion-path.json", auditPath(chain.map(recordHash), 3));
+// The same proof in the object form a log serves (addendum 0.1.1).
+writeJson("inclusion-wrapped.json", {
+  checkpoint_id: checkpoint.checkpoint_id,
+  record_hash: recordHash(chain[3]),
+  leaf_index: 3,
+  tree_size: 5,
+  audit_path: auditPath(chain.map(recordHash), 3),
+  merkle_root: checkpoint.merkle_root,
+});
 writeJson("evidence-3.json", evidenceBundles[3]);
 
-console.log(`gen-vectors: wrote 9 files to ${outDir}`);
+console.log(`gen-vectors: wrote 13 files to ${outDir}`);

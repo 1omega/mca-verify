@@ -121,7 +121,7 @@ export function verifyChain(ars) {
  *  - SEALED_HISTORY_PRESENT when notes.sealed_history is true.
  *  - PRIVATE_MODE for hs256 checkpoints (non-verifiable by third parties).
  */
-export function verifyCheckpoint(cp, ars, prevCp, ed25519PubkeyPem, hmacSecret) {
+export function verifyCheckpoint(cp, ars, prevCp, ed25519PubkeyPem, hmacSecret, opts = {}) {
   if (typeof cp !== "object" || cp === null || Array.isArray(cp))
     return bad(["not-a-json-object"]);
   const reasons = [];
@@ -166,7 +166,6 @@ export function verifyCheckpoint(cp, ars, prevCp, ed25519PubkeyPem, hmacSecret) 
     }
 
     if (cp.notes && cp.notes.sealed_history === true) caveats.push("SEALED_HISTORY_PRESENT");
-    if (!Array.isArray(cp.witnesses) || cp.witnesses.length === 0) caveats.push("UNWITNESSED");
 
     // Operator signature over canonical checkpoint EXCLUDING signature & witnesses.
     const { signature, witnesses: _w, ...signedBody } = cp;
@@ -175,6 +174,28 @@ export function verifyCheckpoint(cp, ars, prevCp, ed25519PubkeyPem, hmacSecret) 
       signedBytes = Buffer.from(canonicalize(signedBody), "utf8");
     } catch (e) {
       reasons.push(`checkpoint-not-canonicalizable:${e.message}`);
+    }
+
+    // Witness countersignatures (spec §8, addendum 0.1.1): each entry signs the
+    // SAME canonical bytes as the operator. UNWITNESSED only when the array is
+    // empty. For each entry: WITNESSED:<id> when a supplied witness key verifies
+    // it, WITNESS_UNVERIFIED:<id> when no key for it was supplied, and INVALID
+    // when a supplied key fails to verify it (a bad cosignature is a defect).
+    if (!Array.isArray(cp.witnesses) || cp.witnesses.length === 0) {
+      caveats.push("UNWITNESSED");
+    } else if (signedBytes) {
+      const keys = opts.witnessKeys ?? {};
+      for (const [i, entry] of cp.witnesses.entries()) {
+        const id = entry?.witness_id ?? `#${i}`;
+        const pem = keys[entry?.key_id] ?? keys[entry?.witness_id];
+        if (pem === undefined) {
+          caveats.push(`WITNESS_UNVERIFIED:${id}`);
+          continue;
+        }
+        const r = verifyWitness(cp, entry, pem);
+        if (r.result === "VALID") caveats.push(`WITNESSED:${id}`);
+        else reasons.push(`bad-witness-signature:${id}:${r.reasons.join(",")}`);
+      }
     }
     if (signedBytes && (typeof signature !== "object" || signature === null)) {
       reasons.push("bad-signature-object");
@@ -225,7 +246,49 @@ export function verifyCheckpoint(cp, ars, prevCp, ed25519PubkeyPem, hmacSecret) 
   return ok(caveats);
 }
 
-/** §13.4 Inclusion proof: AR + RFC 6962 audit path against a checkpoint root. */
+/**
+ * §8 Witness countersignature: Ed25519 over the canonical checkpoint excluding
+ * `signature` and `witnesses` — the same bytes the operator signed. The entry
+ * is `{ witness_id, key_id, alg: "ed25519", timestamp, sig }` (addendum 0.1.1).
+ */
+export function verifyWitness(cp, entry, witnessPubkeyPem) {
+  if (typeof cp !== "object" || cp === null) return bad(["not-a-json-object"]);
+  if (typeof entry !== "object" || entry === null) return bad(["bad-witness-entry"]);
+  if (entry.alg !== "ed25519") return bad([`unsupported-witness-alg:${entry.alg}`]);
+  if (!witnessPubkeyPem) return bad(["no-witness-key-supplied"]);
+  const { signature: _s, witnesses: _w, ...signedBody } = cp;
+  let signedBytes;
+  try {
+    signedBytes = Buffer.from(canonicalize(signedBody), "utf8");
+  } catch (e) {
+    return bad([`checkpoint-not-canonicalizable:${e.message}`]);
+  }
+  let sig;
+  try {
+    sig = Buffer.from(String(entry.sig), "base64url");
+  } catch {
+    sig = null;
+  }
+  let valid = false;
+  if (sig && sig.length === 64) {
+    try {
+      valid = cryptoVerify(null, signedBytes, witnessPubkeyPem, sig);
+    } catch {
+      valid = false;
+    }
+  }
+  return valid ? ok() : bad(["ed25519-verify-failed"]);
+}
+
+/**
+ * §13.4 Inclusion proof: AR + RFC 6962 audit path against a checkpoint root.
+ *
+ * `auditPathValue` is either the bare audit path array, or (addendum 0.1.1)
+ * the inclusion-proof object a log serves:
+ * `{ checkpoint_id, record_hash, leaf_index, tree_size, audit_path, merkle_root }`.
+ * When the object names a `merkle_root`, `checkpoint_id` or `record_hash`, each
+ * MUST agree with the supplied checkpoint/record or the proof is INVALID.
+ */
 export function verifyInclusion(ar, auditPathValue, cp) {
   if (typeof cp !== "object" || cp === null || !HEX64.test(cp?.merkle_root ?? ""))
     return bad(["bad-checkpoint:missing-or-malformed-merkle_root"]);
@@ -233,6 +296,25 @@ export function verifyInclusion(ar, auditPathValue, cp) {
   if (typeof ar !== "object" || ar === null || Array.isArray(ar)) return bad(["not-a-json-object"]);
   validateRecordShape(ar, shape);
   if (shape.length > 0) return bad(shape);
+  if (auditPathValue && typeof auditPathValue === "object" && !Array.isArray(auditPathValue)) {
+    const wrapper = auditPathValue;
+    const mismatch = [];
+    if (wrapper.merkle_root !== undefined && wrapper.merkle_root !== cp.merkle_root)
+      mismatch.push("proof-checkpoint-mismatch:merkle_root");
+    if (wrapper.checkpoint_id !== undefined && cp.checkpoint_id !== undefined && wrapper.checkpoint_id !== cp.checkpoint_id)
+      mismatch.push("proof-checkpoint-mismatch:checkpoint_id");
+    if (wrapper.record_hash !== undefined) {
+      let rh;
+      try {
+        rh = recordHash(ar);
+      } catch (e) {
+        return bad([`not-canonicalizable:${e.message}`]);
+      }
+      if (wrapper.record_hash !== rh) mismatch.push("proof-record-mismatch:record_hash");
+    }
+    if (mismatch.length > 0) return bad(mismatch);
+    auditPathValue = wrapper.audit_path;
+  }
   if (!Array.isArray(auditPathValue)) return bad(["bad-audit-path:not-an-array"]);
   let leaf;
   try {

@@ -5,7 +5,9 @@
  *   mca verify record <file> [--evidence f]
  *   mca verify chain <jsonl>
  *   mca verify checkpoint <cp> --records <jsonl> [--prev cp] [--key pem] [--hmac-secret s]
+ *                         [--witness-key <key_id|witness_id>=<pem> ...]
  *   mca verify inclusion --record f --proof f --checkpoint f
+ *       (--proof accepts the bare audit_path array or a log's inclusion-proof object)
  *
  * Exit codes: 0 = VALID, 1 = INVALID, 2 = usage/IO error.
  */
@@ -44,6 +46,16 @@ function readJsonl(path) {
     }
   }
   return rows;
+}
+
+/** Collect every occurrence of a repeatable `--name value` flag. */
+function flagValues(args, name) {
+  const out = [];
+  for (;;) {
+    const v = flagValue(args, name);
+    if (v === undefined) return out;
+    out.push(v);
+  }
 }
 
 function flagValue(args, name) {
@@ -85,9 +97,22 @@ if (sub === "record") {
   const prevPath = flagValue(args, "--prev");
   const keyPath = flagValue(args, "--key");
   const hmacSecret = flagValue(args, "--hmac-secret");
+  const witnessSpecs = flagValues(args, "--witness-key");
   const cpFile = args.shift();
   if (!cpFile || !recordsPath || args.length > 0)
-    die("usage: mca verify checkpoint <cp> --records <jsonl> [--prev cp] [--key pem] [--hmac-secret s]");
+    die("usage: mca verify checkpoint <cp> --records <jsonl> [--prev cp] [--key pem] [--hmac-secret s] [--witness-key id=pem ...]");
+  const witnessKeys = {};
+  for (const spec of witnessSpecs) {
+    const eq = spec.indexOf("=");
+    if (eq <= 0) die(`--witness-key expects <key_id|witness_id>=<pem path>, got ${spec}`);
+    const id = spec.slice(0, eq);
+    const path = spec.slice(eq + 1);
+    try {
+      witnessKeys[id] = readFileSync(path, "utf8");
+    } catch (e) {
+      die(`cannot read witness key ${path}: ${e.message}`);
+    }
+  }
   let pem;
   if (keyPath !== undefined) {
     try {
@@ -104,6 +129,7 @@ if (sub === "record") {
       prevPath !== undefined ? readJson(prevPath) : undefined,
       pem,
       hmacSecret,
+      { witnessKeys },
     ),
   );
 } else if (sub === "inclusion") {
