@@ -1,0 +1,27 @@
+{
+  "mca_version": "0.1",
+  "log_id": "log.iondra.com/main",
+  "checkpoint_id": "cp-0001",
+  "range": {
+    "from_seq": 0,
+    "to_seq": 4
+  },
+  "merkle_root": "97f3241d1b6a301288940ac1db23b0bb383edb44f9fbb89be4c9420c59e5e3f7",
+  "prev_checkpoint_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "hash_alg": "sha-256",
+  "timestamp": "2026-01-15T12:05:00.000Z",
+  "signature": {
+    "alg": "ed25519",
+    "key_id": "log-main-2026-01",
+    "sig": "5QIJfIu1RnzZccbhre4OsSnBGl51Gyd_ClNLh4j6-5TF2rvz3ko7n4L9dhEaKr93bZazhJ5YTQlB7UMtri2qAQ"
+  },
+  "witnesses": [
+    {
+      "witness_id": "witness.example.org",
+      "key_id": "ed25519:acc796a8d3a0bdb3",
+      "alg": "ed25519",
+      "timestamp": "2026-01-15T12:06:00.000Z",
+      "sig": "nFf6AC8RW2j2mYftVrJDw-MR9rQJEJGo6-gEn4CDtsfUQmFWPCSX1-_OZNC7ELwuAB4krEtClYnrrEA48XMHAg"
+    }
+  ]
+}

@@ -8,7 +8,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { verifyRecord, verifyChain, verifyCheckpoint, verifyInclusion } from "../src/verify.js";
+import { verifyRecord, verifyChain, verifyCheckpoint, verifyInclusion, verifyWitness } from "../src/verify.js";
+import { keyIdFromPublicKeyPem, recordHash } from "../src/hash.js";
 
 const vectors = join(dirname(fileURLToPath(import.meta.url)), "vectors");
 const readJson = (n) => JSON.parse(readFileSync(join(vectors, n), "utf8"));
@@ -89,4 +90,93 @@ test("invalid subject_type is INVALID", () => {
   const r = verifyRecord(bad);
   assert.equal(r.result, "INVALID");
   assert.ok(r.reasons.some((x) => x.startsWith("bad-subject_type")));
+});
+
+// ─── Addendum 0.1.1: witnesses, wrapped inclusion proofs, production vectors ──
+
+const witnessedCp = readJson("checkpoint-witnessed.json");
+const witnessForgedCp = readJson("checkpoint-witness-forged.json");
+const witnessPem = readFileSync(join(vectors, "witness.pub.pem"), "utf8");
+const witnessId = witnessedCp.witnesses[0].witness_id;
+const witnessKeyId = witnessedCp.witnesses[0].key_id;
+
+test("witnessed checkpoint reports WITNESSED:<id> when the witness key is supplied", () => {
+  const r = verifyCheckpoint(witnessedCp, chain, undefined, pubPem, undefined, { witnessKeys: { [witnessKeyId]: witnessPem } });
+  assert.equal(r.result, "VALID", r.reasons.join("; "));
+  assert.ok(r.reasons.includes(`WITNESSED:${witnessId}`));
+  assert.ok(!r.reasons.includes("UNWITNESSED"));
+});
+
+test("witnessed checkpoint reports WITNESS_UNVERIFIED:<id> when no witness key is supplied (never UNWITNESSED)", () => {
+  const r = verifyCheckpoint(witnessedCp, chain, undefined, pubPem);
+  assert.equal(r.result, "VALID", r.reasons.join("; "));
+  assert.ok(r.reasons.includes(`WITNESS_UNVERIFIED:${witnessId}`));
+  assert.ok(!r.reasons.includes("UNWITNESSED"));
+});
+
+test("a witness cosignature over other bytes makes the checkpoint INVALID when its key is supplied", () => {
+  const r = verifyCheckpoint(witnessForgedCp, chain, undefined, pubPem, undefined, { witnessKeys: { [witnessId]: witnessPem } });
+  assert.equal(r.result, "INVALID");
+  assert.ok(r.reasons.some((x) => x.startsWith(`bad-witness-signature:${witnessId}`)));
+  assert.equal(verifyWitness(witnessForgedCp, witnessForgedCp.witnesses[0], witnessPem).result, "INVALID");
+  assert.equal(verifyWitness(witnessedCp, witnessedCp.witnesses[0], witnessPem).result, "VALID");
+});
+
+test("witness entries do not disturb the operator signature", () => {
+  const r = verifyCheckpoint(witnessedCp, chain, undefined, pubPem);
+  assert.equal(r.result, "VALID", r.reasons.join("; "));
+});
+
+test("key_id derives from the SPKI DER: ed25519:<first 16 hex of sha256>", () => {
+  assert.match(keyIdFromPublicKeyPem(witnessPem), /^ed25519:[0-9a-f]{16}$/);
+  assert.equal(keyIdFromPublicKeyPem(witnessPem), witnessKeyId);
+});
+
+test("inclusion proof in a log's object form verifies, and a mismatched wrapper is INVALID", () => {
+  const wrapped = readJson("inclusion-wrapped.json");
+  assert.equal(verifyInclusion(inclusionRecord, wrapped, checkpoint).result, "VALID");
+  const wrongRoot = { ...wrapped, merkle_root: "0".repeat(64) };
+  const r = verifyInclusion(inclusionRecord, wrongRoot, checkpoint);
+  assert.equal(r.result, "INVALID");
+  assert.ok(r.reasons.includes("proof-checkpoint-mismatch:merkle_root"));
+  const wrongRecord = { ...wrapped, record_hash: "0".repeat(64) };
+  assert.ok(verifyInclusion(inclusionRecord, wrongRecord, checkpoint).reasons.includes("proof-record-mismatch:record_hash"));
+});
+
+// Production vectors: captured from log.iondra.com/main/record-hash-v1 on 2026-11-04
+// (checkpoints rh1-cp-5..8, records seq 0..5, operator key, one served inclusion proof).
+const prod = (n) => join(vectors, "production", n);
+const prodJson = (n) => JSON.parse(readFileSync(prod(n), "utf8"));
+const prodJsonl = (n) => readFileSync(prod(n), "utf8").split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l));
+const prodPem = readFileSync(prod("log.pub.pem"), "utf8");
+
+test("production: chain seq 0..5 is VALID", () => {
+  const r = verifyChain(prodJsonl("chain-seq-0-5.jsonl"));
+  assert.equal(r.result, "VALID", r.reasons.join("; "));
+});
+
+test("production: checkpoints rh1-cp-5..8 verify in sequence against the operator key", () => {
+  let prev;
+  for (const i of [5, 6, 7, 8]) {
+    const cp = prodJson(`checkpoint-rh1-cp-${i}.json`);
+    const r = verifyCheckpoint(cp, prodJsonl(`records-rh1-cp-${i}.jsonl`), prev, prodPem);
+    assert.equal(r.result, "VALID", `cp-${i}: ${r.reasons.join("; ")}`);
+    assert.deepEqual(r.reasons, ["UNWITNESSED"], `cp-${i} caveats`);
+    prev = cp;
+  }
+});
+
+test("production: operator key_id in log.json derives from the published key", () => {
+  const log = prodJson("log.json");
+  assert.equal(keyIdFromPublicKeyPem(log.public_key_pem), log.key_id);
+  assert.equal(log.key_id, prodJson("checkpoint-rh1-cp-8.json").signature.key_id);
+});
+
+test("production: the served inclusion proof (object form) verifies the seq-4 commerce leaf under rh1-cp-8", () => {
+  const rec = prodJson("record-seq-4.json");
+  assert.equal(rec.action, "commerce.payment.executed");
+  assert.equal(rec.commerce.rail, "x402");
+  assert.equal(rec.record_hash, recordHash(rec), "record carries its own record_hash, excluded from hashing");
+  const r = verifyInclusion(rec, prodJson("inclusion-seq-4-wrapped.json"), prodJson("checkpoint-rh1-cp-8.json"));
+  assert.equal(r.result, "VALID", r.reasons.join("; "));
 });
