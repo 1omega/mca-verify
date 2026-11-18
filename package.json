@@ -1,6 +1,6 @@
 {
   "name": "@mca/verify",
-  "version": "0.1.1",
+  "version": "0.2.0-draft.1",
   "description": "Reference verifier for the Machine Commerce Attestation (MCA) specification, draft v0.1",
   "type": "module",
   "license": "Apache-2.0",
@@ -8,7 +8,9 @@
     "mca": "src/cli.js"
   },
   "scripts": {
-    "test": "node test/gen-vectors.js && node --test test/verify.test.js"
+    "test": "node --test test/verify.test.js",
+    "gen-vectors": "node test/gen-vectors.js",
+    "test:regen": "node test/gen-vectors.js && node --test test/verify.test.js"
   },
   "engines": {
     "node": ">=18"

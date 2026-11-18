@@ -1,0 +1,183 @@
+{
+  "about": "MCA v0.2 checkpoint-link vectors. For each case: verify `cp` with `records`, the log key, both witness keys and `prev` (when given). `reasons` is the exact list, in order.",
+  "checkpoint_hash": {
+    "t-cp-1": "4eb944f72c2baf785dbffec15b345a894574e9f6f9455204d53bb63c6c2e9527",
+    "t-cp-2": "cb8912ff5b359c5398102bfbbab47f4e65d557b6740cfdf88f4c925719d3142f",
+    "t-cp-3": "ea1add1301618c52a5467db2d3da4861f752d199bfa85b2583a0a5e22da422d0",
+    "t-cp-4": "030f78ad53c9d338968df332e82c8382547887ec66765acc0d3b79d2bb753628"
+  },
+  "cases": [
+    {
+      "name": "0.1 genesis",
+      "cp": "cp-1.emitted.json",
+      "records": "records-cp-1.jsonl",
+      "result": "VALID",
+      "reasons": [
+        "WITNESSED:witness.a.example"
+      ]
+    },
+    {
+      "name": "0.1 link, previous checkpoint as it was when the link was made",
+      "cp": "cp-2.emitted.json",
+      "prev": "cp-1.emitted.json",
+      "records": "records-cp-2.jsonl",
+      "result": "VALID",
+      "reasons": [
+        "WITNESSED:witness.a.example"
+      ]
+    },
+    {
+      "name": "0.1 link, a witness was merged into the previous checkpoint afterwards",
+      "cp": "cp-2.emitted.json",
+      "prev": "cp-1.served.json",
+      "records": "records-cp-2.jsonl",
+      "result": "VALID",
+      "reasons": [
+        "PREV_WITNESS_ADDED_AFTER_LINK:witness.b.example",
+        "WITNESSED:witness.a.example"
+      ]
+    },
+    {
+      "name": "0.1 link, cached previous checkpoint that lacks a witness entry the link covered",
+      "cp": "cp-2.emitted.json",
+      "prev": "cp-1.cached-early.json",
+      "records": "records-cp-2.jsonl",
+      "result": "INVALID",
+      "reasons": [
+        "checkpoint-chain-broken:prev_checkpoint_hash-mismatch"
+      ],
+      "note": "A 0.1 link cannot be checked from a copy taken before the covered witness entry was merged. Fetch the served copy, confirm it has the same checkpoint_hash as the cached one, and verify against that."
+    },
+    {
+      "name": "0.1 checkpoint that uses the 0.2 form",
+      "cp": "cp-2.signed-body-link.json",
+      "prev": "cp-1.emitted.json",
+      "records": "records-cp-2.jsonl",
+      "result": "INVALID",
+      "reasons": [
+        "checkpoint-chain-broken:link-is-the-0.2-signed-body-form-in-a-0.1-checkpoint"
+      ]
+    },
+    {
+      "name": "transition: first 0.2 checkpoint links to the last 0.1 checkpoint, as emitted",
+      "cp": "cp-3.emitted.json",
+      "prev": "cp-2.emitted.json",
+      "records": "records-cp-3.jsonl",
+      "result": "VALID",
+      "reasons": [
+        "WITNESSED:witness.a.example"
+      ]
+    },
+    {
+      "name": "transition: the same, previous checkpoint as served later with a late witness",
+      "cp": "cp-3.served.json",
+      "prev": "cp-2.served.json",
+      "records": "records-cp-3.jsonl",
+      "result": "VALID",
+      "reasons": [
+        "WITNESSED:witness.a.example",
+        "WITNESSED:witness.b.example"
+      ]
+    },
+    {
+      "name": "0.2 link, previous checkpoint as emitted",
+      "cp": "cp-4.emitted.json",
+      "prev": "cp-3.emitted.json",
+      "records": "records-cp-4.jsonl",
+      "result": "VALID",
+      "reasons": [
+        "WITNESSED:witness.a.example"
+      ]
+    },
+    {
+      "name": "0.2 link, previous checkpoint with a late witness",
+      "cp": "cp-4.emitted.json",
+      "prev": "cp-3.served.json",
+      "records": "records-cp-4.jsonl",
+      "result": "VALID",
+      "reasons": [
+        "WITNESSED:witness.a.example"
+      ]
+    },
+    {
+      "name": "0.2 link, cached previous checkpoint with no witnesses member",
+      "cp": "cp-4.emitted.json",
+      "prev": "cp-3.no-witnesses-member.json",
+      "records": "records-cp-4.jsonl",
+      "result": "VALID",
+      "reasons": [
+        "WITNESSED:witness.a.example"
+      ]
+    },
+    {
+      "name": "0.2 link, previous checkpoint with an empty witnesses array",
+      "cp": "cp-4.emitted.json",
+      "prev": "cp-3.empty-witnesses.json",
+      "records": "records-cp-4.jsonl",
+      "result": "VALID",
+      "reasons": [
+        "WITNESSED:witness.a.example"
+      ]
+    },
+    {
+      "name": "0.2 link, previous checkpoint with witnesses in another order",
+      "cp": "cp-4.emitted.json",
+      "prev": "cp-3.reordered.json",
+      "records": "records-cp-4.jsonl",
+      "result": "VALID",
+      "reasons": [
+        "WITNESSED:witness.a.example"
+      ]
+    },
+    {
+      "name": "0.2 link, previous checkpoint body altered",
+      "cp": "cp-4.emitted.json",
+      "prev": "cp-3.altered-body.json",
+      "records": "records-cp-4.jsonl",
+      "result": "INVALID",
+      "reasons": [
+        "checkpoint-chain-broken:prev_checkpoint_hash-mismatch"
+      ]
+    },
+    {
+      "name": "0.2 link, wrong previous checkpoint",
+      "cp": "cp-4.emitted.json",
+      "prev": "cp-2.emitted.json",
+      "records": "records-cp-4.jsonl",
+      "result": "INVALID",
+      "reasons": [
+        "checkpoint-chain-broken:prev_checkpoint_hash-mismatch"
+      ]
+    },
+    {
+      "name": "0.2 checkpoint that uses the 0.1 full form",
+      "cp": "cp-4.full-form-link.json",
+      "prev": "cp-3.emitted.json",
+      "records": "records-cp-4.jsonl",
+      "result": "INVALID",
+      "reasons": [
+        "checkpoint-chain-broken:link-is-the-0.1-full-form-in-a-0.2-checkpoint"
+      ]
+    },
+    {
+      "name": "0.1 checkpoint after a 0.2 checkpoint",
+      "cp": "cp-4.downgrade.json",
+      "prev": "cp-3.emitted.json",
+      "records": "records-cp-4.jsonl",
+      "result": "INVALID",
+      "reasons": [
+        "checkpoint-chain-broken:version-downgrade:0.1-after-0.2"
+      ]
+    },
+    {
+      "name": "previous checkpoint from another log",
+      "cp": "cp-4.links-other-log.json",
+      "prev": "cp-3.other-log.json",
+      "records": "records-cp-4.jsonl",
+      "result": "INVALID",
+      "reasons": [
+        "checkpoint-chain-broken:prev-checkpoint-is-from-another-log"
+      ]
+    }
+  ]
+}

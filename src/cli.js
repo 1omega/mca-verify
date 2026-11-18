@@ -8,12 +8,18 @@
  *                         [--witness-key <key_id|witness_id>=<pem> ...]
  *   mca verify inclusion --record f --proof f --checkpoint f
  *       (--proof accepts the bare audit_path array or a log's inclusion-proof object)
+ *   mca checkpoint-hash <cp>
+ *       (prints the v0.2 checkpoint_hash: the same for every copy of a Checkpoint,
+ *        whatever witness entries the copy carries)
  *
- * Exit codes: 0 = VALID, 1 = INVALID, 2 = usage/IO error.
+ * Exit codes for `mca verify`: 0 = VALID, 1 = INVALID, 2 = usage/IO error.
+ * `mca checkpoint-hash` exits 0 when it printed a hash and 2 otherwise. It
+ * hashes; it does not verify. Exit 0 there says nothing about validity.
  */
 
 import { readFileSync } from "node:fs";
 import { verifyRecord, verifyChain, verifyCheckpoint, verifyInclusion } from "./verify.js";
+import { checkpointHash } from "./hash.js";
 
 function die(msg) {
   console.error(`mca: error: ${msg}`);
@@ -75,8 +81,21 @@ function report(label, r) {
 }
 
 const [verb, sub, ...rest] = process.argv.slice(2);
+if (verb === "checkpoint-hash") {
+  if (!sub || rest.length > 0) die("usage: mca checkpoint-hash <cp>");
+  const cp = readJson(sub);
+  if (typeof cp !== "object" || cp === null || Array.isArray(cp)) die(`${sub} is not a JSON object`);
+  let h;
+  try {
+    h = checkpointHash(cp);
+  } catch (e) {
+    die(`${sub} has no canonical form: ${e.message}`);
+  }
+  console.log(h);
+  process.exit(0);
+}
 if (verb !== "verify" || !sub) {
-  die("usage: mca verify <record|chain|checkpoint|inclusion> ...");
+  die("usage: mca verify <record|chain|checkpoint|inclusion> ... | mca checkpoint-hash <cp>");
 }
 
 if (sub === "record") {
