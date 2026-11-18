@@ -9,7 +9,7 @@
 
 import { createHmac, verify as cryptoVerify, timingSafeEqual } from "node:crypto";
 import { canonicalize } from "./canonicalize.js";
-import { recordHash, hashCanonical, ZERO64 } from "./hash.js";
+import { recordHash, hashCanonical, checkpointBody, checkpointHash, ZERO64 } from "./hash.js";
 import { merkleRoot, verifyInclusionPath } from "./merkle.js";
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -27,6 +27,114 @@ const REQUIRED_RECORD_FIELDS = [
   "evidence_hash",
   "prev_hash",
 ];
+
+/**
+ * How a Checkpoint's `prev_checkpoint_hash` is computed, selected by the
+ * `mca_version` of the Checkpoint that CARRIES the link (it is inside the
+ * signed body, so the operator signs the choice):
+ *
+ *  "0.1"  full form        SHA-256 over the canonical form of the WHOLE previous
+ *                          Checkpoint, `signature` and `witnesses` included
+ *                          (v0.1 §6). The value depends on which witness
+ *                          entries the previous Checkpoint held at that moment.
+ *  "0.2"  signed-body form SHA-256 over the canonical previous Checkpoint body
+ *                          (v0.2 §6.3, `checkpointHash`). Independent of witnesses.
+ */
+const LINK_FORM = { "0.1": "full", "0.2": "signed-body" };
+const CHECKPOINT_VERSIONS = new Set(Object.keys(LINK_FORM));
+
+/** Above this many witness entries only prefixes are tried (2^n subsets otherwise). */
+const WITNESS_SUBSET_LIMIT = 12;
+
+/**
+ * v0.1 links only. The previous Checkpoint as supplied does not reproduce the
+ * link. Find out whether it does once some of its witness entries are set
+ * aside, i.e. whether those entries were merged after the link was made.
+ * Entry order is kept. Returns the entries NOT covered by the link, or null.
+ *
+ * A match is as strong as an exact one for everything that matters: the hash
+ * still covers the whole body and the operator signature of the previous
+ * Checkpoint, so its signed content is the content the link committed to.
+ */
+function witnessesAddedAfterLink(linkHash, prevCp) {
+  const W = Array.isArray(prevCp.witnesses) ? prevCp.witnesses : [];
+  if (W.length === 0) return null;
+  const { witnesses: _w, ...rest } = prevCp;
+  const tryKeep = (keepIdx) => {
+    const kept = keepIdx.map((i) => W[i]);
+    const hit =
+      hashCanonical({ ...rest, witnesses: kept }) === linkHash ||
+      (kept.length === 0 && hashCanonical(rest) === linkHash); // emitted with no `witnesses` member at all
+    return hit ? W.filter((_, i) => !keepIdx.includes(i)) : null;
+  };
+  if (W.length > WITNESS_SUBSET_LIMIT) {
+    for (let k = W.length - 1; k >= 0; k--) {
+      const late = tryKeep([...Array(k).keys()]);
+      if (late) return late;
+    }
+    return null;
+  }
+  // Largest kept set first, so the fewest entries are reported as late.
+  const masks = [];
+  for (let m = 0; m < (1 << W.length) - 1; m++) masks.push(m);
+  const bits = (m) => { let c = 0; for (let x = m; x; x >>= 1) c += x & 1; return c; };
+  masks.sort((x, y) => bits(y) - bits(x) || x - y);
+  for (const m of masks) {
+    const late = tryKeep([...Array(W.length).keys()].filter((i) => m & (1 << i)));
+    if (late) return late;
+  }
+  return null;
+}
+
+/**
+ * Checkpoint chain link (§13.3): does `cp.prev_checkpoint_hash` commit to `prevCp`?
+ * Pushes failures to `reasons` and caveats to `caveats`.
+ */
+function verifyCheckpointLink(cp, prevCp, reasons, caveats) {
+  if (typeof prevCp !== "object" || Array.isArray(prevCp)) {
+    reasons.push("bad-prev-checkpoint:not-a-json-object");
+    return;
+  }
+  if (prevCp.log_id !== cp.log_id) {
+    // Each Log (and each generation of a Log) has its own chain from genesis.
+    reasons.push("checkpoint-chain-broken:prev-checkpoint-is-from-another-log");
+    return;
+  }
+  if (prevCp.mca_version === "0.2" && cp.mca_version === "0.1") {
+    // The link form never goes back: once a Log emits a 0.2 Checkpoint, every later one is 0.2.
+    reasons.push("checkpoint-chain-broken:version-downgrade:0.1-after-0.2");
+    return;
+  }
+  let full, body;
+  try {
+    full = hashCanonical(prevCp);
+    body = checkpointHash(prevCp);
+  } catch (e) {
+    reasons.push(`prev-checkpoint-not-canonicalizable:${e.message}`);
+    return;
+  }
+  const link = cp.prev_checkpoint_hash;
+  if (LINK_FORM[cp.mca_version] === "signed-body") {
+    if (link === body) return;
+    // Name the commonest operator mistake instead of a bare mismatch.
+    if (link === full || witnessesAddedAfterLink(link, prevCp) !== null)
+      reasons.push("checkpoint-chain-broken:link-is-the-0.1-full-form-in-a-0.2-checkpoint");
+    else reasons.push("checkpoint-chain-broken:prev_checkpoint_hash-mismatch");
+    return;
+  }
+  // v0.1 full form.
+  if (link === full) return;
+  const late = witnessesAddedAfterLink(link, prevCp);
+  if (late !== null) {
+    // The signed content of the previous Checkpoint is what the link committed
+    // to; only witness entries were merged afterwards. Valid, and never silent.
+    for (const [i, entry] of late.entries())
+      caveats.push(`PREV_WITNESS_ADDED_AFTER_LINK:${entry?.witness_id ?? `#${i}`}`);
+    return;
+  }
+  if (link === body) reasons.push("checkpoint-chain-broken:link-is-the-0.2-signed-body-form-in-a-0.1-checkpoint");
+  else reasons.push("checkpoint-chain-broken:prev_checkpoint_hash-mismatch");
+}
 
 const ok = (reasons = []) => ({ result: "VALID", reasons });
 const bad = (reasons) => ({ result: "INVALID", reasons });
@@ -114,7 +222,11 @@ export function verifyChain(ars) {
 
 /**
  * §13.3 Checkpoint verification: Merkle root over the range, operator
- * signature, prev_checkpoint_hash chain. Caveats:
+ * signature, prev_checkpoint_hash chain. The chain link is checked in the form
+ * the Checkpoint's own `mca_version` selects (see LINK_FORM). Caveats:
+ *  - PREV_WITNESS_ADDED_AFTER_LINK:<witness_id> when a v0.1 link reproduces
+ *    only after setting aside witness entries merged into the previous
+ *    Checkpoint later (the signed content is unchanged).
  *  - UNANCHORED when no prior checkpoint is supplied and the checkpoint does
  *    not carry the genesis (all-zero) prev_checkpoint_hash.
  *  - UNWITNESSED when the witnesses array is empty/absent.
@@ -131,7 +243,7 @@ export function verifyCheckpoint(cp, ars, prevCp, ed25519PubkeyPem, hmacSecret, 
     if (cp[f] === undefined || cp[f] === null) reasons.push(`missing-field:${f}`);
   }
   if (reasons.length > 0) return bad(reasons);
-  if (cp.mca_version !== "0.1") reasons.push(`unsupported-version:${cp.mca_version}`);
+  if (!CHECKPOINT_VERSIONS.has(cp.mca_version)) reasons.push(`unsupported-version:${cp.mca_version}`);
   if (cp.hash_alg !== "sha-256") reasons.push(`unsupported-hash_alg:${cp.hash_alg}`);
   if (!HEX64.test(cp.merkle_root)) reasons.push("bad-merkle_root:not-64-lower-hex");
   if (!HEX64.test(cp.prev_checkpoint_hash)) reasons.push("bad-prev_checkpoint_hash:not-64-lower-hex");
@@ -158,9 +270,7 @@ export function verifyCheckpoint(cp, ars, prevCp, ed25519PubkeyPem, hmacSecret, 
 
     // Checkpoint chain.
     if (prevCp !== undefined && prevCp !== null) {
-      const expected = hashCanonical(prevCp);
-      if (cp.prev_checkpoint_hash !== expected)
-        reasons.push("checkpoint-chain-broken:prev_checkpoint_hash-mismatch");
+      verifyCheckpointLink(cp, prevCp, reasons, caveats);
     } else if (cp.prev_checkpoint_hash !== ZERO64) {
       caveats.push("UNANCHORED:no-prior-checkpoint-supplied");
     }
@@ -168,10 +278,10 @@ export function verifyCheckpoint(cp, ars, prevCp, ed25519PubkeyPem, hmacSecret, 
     if (cp.notes && cp.notes.sealed_history === true) caveats.push("SEALED_HISTORY_PRESENT");
 
     // Operator signature over canonical checkpoint EXCLUDING signature & witnesses.
-    const { signature, witnesses: _w, ...signedBody } = cp;
+    const { signature } = cp;
     let signedBytes;
     try {
-      signedBytes = Buffer.from(canonicalize(signedBody), "utf8");
+      signedBytes = Buffer.from(canonicalize(checkpointBody(cp)), "utf8");
     } catch (e) {
       reasons.push(`checkpoint-not-canonicalizable:${e.message}`);
     }
@@ -256,10 +366,9 @@ export function verifyWitness(cp, entry, witnessPubkeyPem) {
   if (typeof entry !== "object" || entry === null) return bad(["bad-witness-entry"]);
   if (entry.alg !== "ed25519") return bad([`unsupported-witness-alg:${entry.alg}`]);
   if (!witnessPubkeyPem) return bad(["no-witness-key-supplied"]);
-  const { signature: _s, witnesses: _w, ...signedBody } = cp;
   let signedBytes;
   try {
-    signedBytes = Buffer.from(canonicalize(signedBody), "utf8");
+    signedBytes = Buffer.from(canonicalize(checkpointBody(cp)), "utf8");
   } catch (e) {
     return bad([`checkpoint-not-canonicalizable:${e.message}`]);
   }

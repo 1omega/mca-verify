@@ -1,6 +1,6 @@
 {
   "name": "@mca/verify",
-  "version": "0.1.1",
+  "version": "0.2.0-draft.1",
   "description": "Reference verifier for the Machine Commerce Attestation (MCA) specification, draft v0.1",
   "type": "module",
   "license": "Apache-2.0",

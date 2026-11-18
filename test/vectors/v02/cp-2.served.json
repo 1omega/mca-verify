@@ -1,0 +1,34 @@
+{
+  "mca_version": "0.1",
+  "log_id": "log.iondra.com/main",
+  "checkpoint_id": "t-cp-2",
+  "range": {
+    "from_seq": 2,
+    "to_seq": 2
+  },
+  "merkle_root": "7e8ae8537ca22acb4a95642314d606a3f9b4b115bb653de9666e8a2e6c8b0334",
+  "prev_checkpoint_hash": "3dcb0956cd3df1c4e0d2c06f94f7b553536df017c3f3956f257ea8dbc51af90b",
+  "hash_alg": "sha-256",
+  "timestamp": "2026-01-15T12:20:00.000Z",
+  "signature": {
+    "alg": "ed25519",
+    "key_id": "ed25519:37d7a69735028469",
+    "sig": "vxTxjTHtr1BCD7gR-G2f6IDhqK1hOdpl2cCh38AhBZPPqJys07z7AwjfR0oJCfx3YwB_ynTnyrWRx8V5KmtmAQ"
+  },
+  "witnesses": [
+    {
+      "witness_id": "witness.a.example",
+      "key_id": "ed25519:e917cd3af45c4cfb",
+      "alg": "ed25519",
+      "timestamp": "2026-01-15T12:21:00.000Z",
+      "sig": "6JltuxszHx6rct8GTG7UkvzzNwLPDUW_4nUANJmYR-_O3khPyZ8NHDkYMobK0T3deaLr784wx-TF9z5BhadLCQ"
+    },
+    {
+      "witness_id": "witness.b.example",
+      "key_id": "ed25519:770bd5e9642e0714",
+      "alg": "ed25519",
+      "timestamp": "2026-01-15T12:50:00.000Z",
+      "sig": "REgTSFmEdUjjDUxtz7TdduOSg7DdSCslg4rUinvA0WdWqkMdSkw-YqX4uUHNcHys4wZRuGvuuDCl0NAT7YtTCw"
+    }
+  ]
+}
