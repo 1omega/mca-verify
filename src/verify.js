@@ -43,6 +43,9 @@ const REQUIRED_RECORD_FIELDS = [
 const LINK_FORM = { "0.1": "full", "0.2": "signed-body" };
 const CHECKPOINT_VERSIONS = new Set(Object.keys(LINK_FORM));
 
+/** A witness entry's name for a result string. Entries are untrusted: only a string is used as given. */
+const witnessLabel = (entry, i) => (typeof entry?.witness_id === "string" ? entry.witness_id : `#${i}`);
+
 /** Up to this many witness entries, every ordered subset is tried (at most 4,095 hashes). */
 const WITNESS_SUBSET_LIMIT = 12;
 /** Up to this many, only leading runs are tried (at most 64 hashes). Beyond it, nothing is tried. */
@@ -134,6 +137,7 @@ function verifyCheckpointLink(cp, prevCp, reasons, caveats) {
     reasons.push(`prev-checkpoint-not-canonicalizable:${e.message}`);
     return;
   }
+  if (LINK_FORM[cp.mca_version] === "signed-body" && link === body) return; // nothing else is read for a matching 0.2 link
   // The full form covers `witnesses` too and may have no canonical form even when the body does.
   let full = null;
   let fullError = null;
@@ -143,7 +147,6 @@ function verifyCheckpointLink(cp, prevCp, reasons, caveats) {
     fullError = e;
   }
   if (LINK_FORM[cp.mca_version] === "signed-body") {
-    if (link === body) return;
     // Name the commonest operator mistake instead of a bare mismatch.
     if (full !== null && link === full) reasons.push("checkpoint-chain-broken:link-is-the-0.1-full-form-in-a-0.2-checkpoint");
     else reasons.push("checkpoint-chain-broken:prev_checkpoint_hash-mismatch");
@@ -151,16 +154,22 @@ function verifyCheckpointLink(cp, prevCp, reasons, caveats) {
   }
   // v0.1 full form.
   if (full !== null && link === full) return;
+  // A body-form link in a 0.1 Checkpoint is the wrong form. Decide it here, before the
+  // witness search: for a previous Checkpoint with no `signature`, setting every witness
+  // aside yields exactly the body, and the search would accept it.
+  if (link === body) {
+    reasons.push("checkpoint-chain-broken:link-is-the-0.2-signed-body-form-in-a-0.1-checkpoint");
+    return;
+  }
   const { uncovered, exhaustive } = witnessesNotCoveredByLink(link, prevCp);
   if (uncovered !== null) {
     // The signed content of the previous Checkpoint is what the link committed
     // to; the link just does not cover these witness entries. Valid, and never silent.
     for (const [i, entry] of uncovered.entries())
-      caveats.push(`PREV_WITNESS_ADDED_AFTER_LINK:${entry?.witness_id ?? `#${i}`}`);
+      caveats.push(`PREV_WITNESS_ADDED_AFTER_LINK:${witnessLabel(entry, i)}`);
     return;
   }
-  if (link === body) reasons.push("checkpoint-chain-broken:link-is-the-0.2-signed-body-form-in-a-0.1-checkpoint");
-  else if (!exhaustive)
+  if (!exhaustive)
     // Not every combination of witness entries was tried. The link may still be
     // sound: check it against the previous Checkpoint exactly as it stood when the link was made.
     reasons.push(`checkpoint-chain-broken:prev_checkpoint_hash-mismatch:witness-search-incomplete:${prevCp.witnesses.length}-entries`);
@@ -336,8 +345,9 @@ export function verifyCheckpoint(cp, ars, prevCp, ed25519PubkeyPem, hmacSecret, 
     } else if (signedBytes) {
       const keys = opts.witnessKeys ?? {};
       for (const [i, entry] of cp.witnesses.entries()) {
-        const id = entry?.witness_id ?? `#${i}`;
-        const pem = keys[entry?.key_id] ?? keys[entry?.witness_id];
+        const id = witnessLabel(entry, i);
+        const key = (k) => (typeof k === "string" ? keys[k] : undefined);
+        const pem = key(entry?.key_id) ?? key(entry?.witness_id);
         if (pem === undefined) {
           caveats.push(`WITNESS_UNVERIFIED:${id}`);
           continue;

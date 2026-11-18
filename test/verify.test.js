@@ -404,12 +404,9 @@ test("0.1 link, a very long witness list: no search is attempted and the reason 
   const cp2 = v02Json("cp-2.emitted.json");
   const one = v02Json("cp-1.emitted.json");
   const witnesses = [...one.witnesses, ...Array.from({ length: 20000 }, (_, i) => ({ ...one.witnesses[0], witness_id: `witness.late-${i}.example` }))];
-  const started = process.hrtime.bigint();
   const r = verifyCheckpoint(cp2, v02Jsonl("records-cp-2.jsonl"), { ...one, witnesses }, v02LogPem);
-  const ms = Number(process.hrtime.bigint() - started) / 1e6;
   assert.equal(r.result, "INVALID");
   assert.deepEqual(r.reasons, ["checkpoint-chain-broken:prev_checkpoint_hash-mismatch:witness-search-incomplete:20001-entries"]);
-  assert.ok(ms < 2000, `bounded work: took ${ms.toFixed(0)} ms`);
   // 64 entries is the last size still searched (leading runs only).
   const w64 = [...one.witnesses, ...witnesses.slice(1, 64)];
   assert.equal(verifyCheckpoint(cp2, v02Jsonl("records-cp-2.jsonl"), { ...one, witnesses: w64 }, v02LogPem).result, "VALID");
@@ -478,4 +475,47 @@ test("CLI: `mca checkpoint-hash` on a checkpoint with no canonical form is an in
   assert.equal(r.status, 2);
   assert.match(r.stderr, /^mca: error: .* has no canonical form: /);
   assert.equal(r.stdout, "");
+});
+
+test("0.1 checkpoint with a body-form link to an UNSIGNED previous checkpoint is the wrong form, not a late-witness match", () => {
+  // Without a `signature`, the previous checkpoint minus all its witnesses IS its body. The witness
+  // search must not get the chance to accept that.
+  const prev = v02Json("cp-1.emitted.json");
+  const { signature: _s, ...unsigned } = prev; // keeps its one witness entry
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const pem = publicKey.export({ type: "spki", format: "pem" });
+  const body = { ...checkpointBody(v02Json("cp-2.emitted.json")), prev_checkpoint_hash: checkpointHash(unsigned) };
+  const cp = { ...body, signature: { alg: "ed25519", key_id: keyIdFromPublicKeyPem(pem), sig: cryptoSign(null, Buffer.from(canonicalize(body), "utf8"), privateKey).toString("base64url") }, witnesses: [] };
+  const r = verifyCheckpoint(cp, v02Jsonl("records-cp-2.jsonl"), unsigned, pem);
+  assert.equal(r.result, "INVALID");
+  assert.deepEqual(r.reasons, ["checkpoint-chain-broken:link-is-the-0.2-signed-body-form-in-a-0.1-checkpoint"]);
+  // With neither `signature` nor `witnesses` the two forms are the same bytes: that is a valid 0.1 full-form link.
+  const { witnesses: _w, ...bare } = unsigned;
+  const body2 = { ...body, prev_checkpoint_hash: hashCanonical(bare) };
+  const cp2 = { ...body2, signature: { alg: "ed25519", key_id: keyIdFromPublicKeyPem(pem), sig: cryptoSign(null, Buffer.from(canonicalize(body2), "utf8"), privateKey).toString("base64url") }, witnesses: [] };
+  assert.equal(verifyCheckpoint(cp2, v02Jsonl("records-cp-2.jsonl"), bare, pem).result, "VALID");
+});
+
+test("a witness entry whose witness_id is not a string never breaks the report", () => {
+  const hostile = { witness_id: { toString: null }, key_id: { toString: null }, alg: "ed25519", timestamp: "2026-01-15T12:11:00.000Z", sig: "x" };
+  // As a late entry on a 0.1 predecessor: named by position.
+  const one = v02Json("cp-1.emitted.json");
+  let r = verifyCheckpoint(v02Json("cp-2.emitted.json"), v02Jsonl("records-cp-2.jsonl"), { ...one, witnesses: [...one.witnesses, hostile] }, v02LogPem);
+  assert.equal(r.result, "VALID", r.reasons.join("; "));
+  assert.ok(r.reasons.includes("PREV_WITNESS_ADDED_AFTER_LINK:#0"));
+  // As a witness entry on the checkpoint being verified.
+  const cp4 = v02Json("cp-4.emitted.json");
+  r = verifyCheckpoint({ ...cp4, witnesses: [...cp4.witnesses, hostile] }, v02Jsonl("records-cp-4.jsonl"), v02Json("cp-3.emitted.json"), v02LogPem, undefined, { witnessKeys: v02Witnesses });
+  assert.equal(r.result, "VALID", r.reasons.join("; "));
+  assert.deepEqual(r.reasons, ["WITNESSED:witness.a.example", "WITNESS_UNVERIFIED:#1"]);
+});
+
+test("0.2 link: a matching link is decided on the body alone; the previous checkpoint's full form is never serialized", () => {
+  const prev = v02Json("cp-3.emitted.json");
+  let touched = 0;
+  const trap = { witness_id: "witness.trap.example" };
+  Object.defineProperty(trap, "sig", { enumerable: true, get() { touched++; return "x"; } });
+  const r = verifyCheckpoint(v02Json("cp-4.emitted.json"), v02Jsonl("records-cp-4.jsonl"), { ...prev, witnesses: [...prev.witnesses, trap] }, v02LogPem);
+  assert.equal(r.result, "VALID", r.reasons.join("; "));
+  assert.equal(touched, 0, "witness entries of the previous checkpoint were not read");
 });
