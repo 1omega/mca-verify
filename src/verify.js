@@ -43,47 +43,66 @@ const REQUIRED_RECORD_FIELDS = [
 const LINK_FORM = { "0.1": "full", "0.2": "signed-body" };
 const CHECKPOINT_VERSIONS = new Set(Object.keys(LINK_FORM));
 
-/** Above this many witness entries only prefixes are tried (2^n subsets otherwise). */
+/** Up to this many witness entries, every ordered subset is tried (at most 4,095 hashes). */
 const WITNESS_SUBSET_LIMIT = 12;
+/** Up to this many, only leading runs are tried (at most 64 hashes). Beyond it, nothing is tried. */
+const WITNESS_SEARCH_LIMIT = 64;
 
 /**
  * v0.1 links only. The previous Checkpoint as supplied does not reproduce the
  * link. Find out whether it does once some of its witness entries are set
- * aside, i.e. whether those entries were merged after the link was made.
- * Entry order is kept. Returns the entries NOT covered by the link, or null.
+ * aside, i.e. whether the link did not cover those entries. Entry order is kept.
+ *
+ * Returns `{ uncovered, exhaustive }`. `uncovered` is the list of entries the
+ * link does not cover, or null when no tried combination reproduces it.
+ * `exhaustive` is false when the work bound stopped the search short, so a
+ * null answer then means "not found among what was tried", not "no such subset".
  *
  * A match is as strong as an exact one for everything that matters: the hash
  * still covers the whole body and the operator signature of the previous
- * Checkpoint, so its signed content is the content the link committed to.
+ * Checkpoint, so its signed content is the content the link committed to. It
+ * shows that the link did not cover the set-aside entries; it does not show
+ * when the Log merged them.
+ *
+ * The work is bounded because the previous Checkpoint is untrusted input: each
+ * attempt serializes and hashes the whole object.
  */
-function witnessesAddedAfterLink(linkHash, prevCp) {
+function witnessesNotCoveredByLink(linkHash, prevCp) {
   const W = Array.isArray(prevCp.witnesses) ? prevCp.witnesses : [];
-  if (W.length === 0) return null;
+  if (W.length === 0) return { uncovered: null, exhaustive: true };
+  if (W.length > WITNESS_SEARCH_LIMIT) return { uncovered: null, exhaustive: false };
   const { witnesses: _w, ...rest } = prevCp;
+  const matches = (value) => {
+    try {
+      return hashCanonical(value) === linkHash;
+    } catch {
+      return false; // an entry with no canonical form cannot be part of a hashed link
+    }
+  };
   const tryKeep = (keepIdx) => {
     const kept = keepIdx.map((i) => W[i]);
-    const hit =
-      hashCanonical({ ...rest, witnesses: kept }) === linkHash ||
-      (kept.length === 0 && hashCanonical(rest) === linkHash); // emitted with no `witnesses` member at all
+    // When nothing is kept, the link may have been made over `"witnesses": []`
+    // or over a Checkpoint with no `witnesses` member at all: both are tried.
+    const hit = matches({ ...rest, witnesses: kept }) || (kept.length === 0 && matches(rest));
     return hit ? W.filter((_, i) => !keepIdx.includes(i)) : null;
   };
   if (W.length > WITNESS_SUBSET_LIMIT) {
     for (let k = W.length - 1; k >= 0; k--) {
-      const late = tryKeep([...Array(k).keys()]);
-      if (late) return late;
+      const uncovered = tryKeep([...Array(k).keys()]);
+      if (uncovered) return { uncovered, exhaustive: false };
     }
-    return null;
+    return { uncovered: null, exhaustive: false };
   }
-  // Largest kept set first, so the fewest entries are reported as late.
+  // Largest kept set first, so the fewest entries are reported.
   const masks = [];
   for (let m = 0; m < (1 << W.length) - 1; m++) masks.push(m);
   const bits = (m) => { let c = 0; for (let x = m; x; x >>= 1) c += x & 1; return c; };
   masks.sort((x, y) => bits(y) - bits(x) || x - y);
   for (const m of masks) {
-    const late = tryKeep([...Array(W.length).keys()].filter((i) => m & (1 << i)));
-    if (late) return late;
+    const uncovered = tryKeep([...Array(W.length).keys()].filter((i) => m & (1 << i)));
+    if (uncovered) return { uncovered, exhaustive: true };
   }
-  return null;
+  return { uncovered: null, exhaustive: true };
 }
 
 /**
@@ -105,34 +124,47 @@ function verifyCheckpointLink(cp, prevCp, reasons, caveats) {
     reasons.push("checkpoint-chain-broken:version-downgrade:0.1-after-0.2");
     return;
   }
-  let full, body;
+  const link = cp.prev_checkpoint_hash;
+  // The signed-body hash first: a 0.2 link depends on nothing else, so a witness
+  // entry that cannot be serialized must not get in its way.
+  let body;
   try {
-    full = hashCanonical(prevCp);
     body = checkpointHash(prevCp);
   } catch (e) {
     reasons.push(`prev-checkpoint-not-canonicalizable:${e.message}`);
     return;
   }
-  const link = cp.prev_checkpoint_hash;
+  // The full form covers `witnesses` too and may have no canonical form even when the body does.
+  let full = null;
+  let fullError = null;
+  try {
+    full = hashCanonical(prevCp);
+  } catch (e) {
+    fullError = e;
+  }
   if (LINK_FORM[cp.mca_version] === "signed-body") {
     if (link === body) return;
     // Name the commonest operator mistake instead of a bare mismatch.
-    if (link === full || witnessesAddedAfterLink(link, prevCp) !== null)
-      reasons.push("checkpoint-chain-broken:link-is-the-0.1-full-form-in-a-0.2-checkpoint");
+    if (full !== null && link === full) reasons.push("checkpoint-chain-broken:link-is-the-0.1-full-form-in-a-0.2-checkpoint");
     else reasons.push("checkpoint-chain-broken:prev_checkpoint_hash-mismatch");
     return;
   }
   // v0.1 full form.
-  if (link === full) return;
-  const late = witnessesAddedAfterLink(link, prevCp);
-  if (late !== null) {
+  if (full !== null && link === full) return;
+  const { uncovered, exhaustive } = witnessesNotCoveredByLink(link, prevCp);
+  if (uncovered !== null) {
     // The signed content of the previous Checkpoint is what the link committed
-    // to; only witness entries were merged afterwards. Valid, and never silent.
-    for (const [i, entry] of late.entries())
+    // to; the link just does not cover these witness entries. Valid, and never silent.
+    for (const [i, entry] of uncovered.entries())
       caveats.push(`PREV_WITNESS_ADDED_AFTER_LINK:${entry?.witness_id ?? `#${i}`}`);
     return;
   }
   if (link === body) reasons.push("checkpoint-chain-broken:link-is-the-0.2-signed-body-form-in-a-0.1-checkpoint");
+  else if (!exhaustive)
+    // Not every combination of witness entries was tried. The link may still be
+    // sound: check it against the previous Checkpoint exactly as it stood when the link was made.
+    reasons.push(`checkpoint-chain-broken:prev_checkpoint_hash-mismatch:witness-search-incomplete:${prevCp.witnesses.length}-entries`);
+  else if (fullError) reasons.push(`prev-checkpoint-not-canonicalizable:${fullError.message}`);
   else reasons.push("checkpoint-chain-broken:prev_checkpoint_hash-mismatch");
 }
 
@@ -225,8 +257,8 @@ export function verifyChain(ars) {
  * signature, prev_checkpoint_hash chain. The chain link is checked in the form
  * the Checkpoint's own `mca_version` selects (see LINK_FORM). Caveats:
  *  - PREV_WITNESS_ADDED_AFTER_LINK:<witness_id> when a v0.1 link reproduces
- *    only after setting aside witness entries merged into the previous
- *    Checkpoint later (the signed content is unchanged).
+ *    only after setting aside that witness entry of the previous Checkpoint:
+ *    the link does not cover it (the signed content is unchanged).
  *  - UNANCHORED when no prior checkpoint is supplied and the checkpoint does
  *    not carry the genesis (all-zero) prev_checkpoint_hash.
  *  - UNWITNESSED when the witnesses array is empty/absent.
@@ -263,8 +295,16 @@ export function verifyCheckpoint(cp, ars, prevCp, ed25519PubkeyPem, hmacSecret, 
           reasons.push(`range-record-mismatch:position-${i}-has-seq-${ars[i]?.seq}`);
       }
       if (reasons.length === 0) {
-        const recomputed = merkleRoot(ars.map((a) => recordHash(a)));
-        if (recomputed !== cp.merkle_root) reasons.push("merkle-root-mismatch");
+        const leaves = [];
+        for (let i = 0; i < ars.length; i++) {
+          try {
+            leaves.push(recordHash(ars[i]));
+          } catch (e) {
+            reasons.push(`record-not-canonicalizable:position-${i}:${e.message}`);
+            break;
+          }
+        }
+        if (reasons.length === 0 && merkleRoot(leaves) !== cp.merkle_root) reasons.push("merkle-root-mismatch");
       }
     }
 

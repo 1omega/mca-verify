@@ -11,7 +11,9 @@ import { fileURLToPath } from "node:url";
 import { verifyRecord, verifyChain, verifyCheckpoint, verifyInclusion, verifyWitness } from "../src/verify.js";
 import { keyIdFromPublicKeyPem, recordHash, hashCanonical, checkpointBody, checkpointHash } from "../src/hash.js";
 import { generateKeyPairSync, sign as cryptoSign } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { canonicalize } from "../src/canonicalize.js";
 
 const vectors = join(dirname(fileURLToPath(import.meta.url)), "vectors");
@@ -378,4 +380,102 @@ test("production: a checkpoint of the legacy generation cannot stand in as the p
   const r = verifyCheckpoint(prodJson("checkpoint-rh1-cp-6.json"), prodJsonl("records-rh1-cp-6.jsonl"), legacy, prodPem);
   assert.equal(r.result, "INVALID");
   assert.deepEqual(r.reasons, ["checkpoint-chain-broken:prev-checkpoint-is-from-another-log"]);
+});
+
+// ─── Review follow-ups: bounded witness search, inputs with no canonical form ──
+
+test("0.1 link, more than 12 witness entries, a late entry ahead of the covered one: INVALID, and the reason says the search was incomplete", () => {
+  const cp2 = v02Json("cp-2.emitted.json");
+  const one = v02Json("cp-1.emitted.json");
+  const [a] = one.witnesses;
+  const late = (i) => ({ ...a, witness_id: `witness.late-${i}.example` });
+  // The link covers [a]. The served copy holds [late-0, a, late-1 .. late-11]: 13 entries, so only leading runs are tried.
+  const witnesses = [late(0), a, ...Array.from({ length: 11 }, (_, i) => late(i + 1))];
+  const r = verifyCheckpoint(cp2, v02Jsonl("records-cp-2.jsonl"), { ...one, witnesses }, v02LogPem);
+  assert.equal(r.result, "INVALID");
+  assert.deepEqual(r.reasons, ["checkpoint-chain-broken:prev_checkpoint_hash-mismatch:witness-search-incomplete:13-entries"]);
+  // With 12 entries the same arrangement is searched in full and resolves.
+  const r12 = verifyCheckpoint(cp2, v02Jsonl("records-cp-2.jsonl"), { ...one, witnesses: witnesses.slice(0, 12) }, v02LogPem);
+  assert.equal(r12.result, "VALID", r12.reasons.join("; "));
+  assert.equal(r12.reasons.filter((x) => x.startsWith("PREV_WITNESS_ADDED_AFTER_LINK:")).length, 11);
+});
+
+test("0.1 link, a very long witness list: no search is attempted and the reason says so", () => {
+  const cp2 = v02Json("cp-2.emitted.json");
+  const one = v02Json("cp-1.emitted.json");
+  const witnesses = [...one.witnesses, ...Array.from({ length: 20000 }, (_, i) => ({ ...one.witnesses[0], witness_id: `witness.late-${i}.example` }))];
+  const started = process.hrtime.bigint();
+  const r = verifyCheckpoint(cp2, v02Jsonl("records-cp-2.jsonl"), { ...one, witnesses }, v02LogPem);
+  const ms = Number(process.hrtime.bigint() - started) / 1e6;
+  assert.equal(r.result, "INVALID");
+  assert.deepEqual(r.reasons, ["checkpoint-chain-broken:prev_checkpoint_hash-mismatch:witness-search-incomplete:20001-entries"]);
+  assert.ok(ms < 2000, `bounded work: took ${ms.toFixed(0)} ms`);
+  // 64 entries is the last size still searched (leading runs only).
+  const w64 = [...one.witnesses, ...witnesses.slice(1, 64)];
+  assert.equal(verifyCheckpoint(cp2, v02Jsonl("records-cp-2.jsonl"), { ...one, witnesses: w64 }, v02LogPem).result, "VALID");
+  const w65 = [...one.witnesses, ...witnesses.slice(1, 65)];
+  assert.equal(verifyCheckpoint(cp2, v02Jsonl("records-cp-2.jsonl"), { ...one, witnesses: w65 }, v02LogPem).result, "INVALID");
+});
+
+test("a 0.2 checkpoint in the wrong form costs one comparison to diagnose, however many witnesses the previous checkpoint has", () => {
+  const cp = v02Json("cp-4.full-form-link.json");
+  const prev = v02Json("cp-3.emitted.json");
+  const many = { ...prev, witnesses: [...prev.witnesses, ...Array.from({ length: 20000 }, (_, i) => ({ ...prev.witnesses[0], witness_id: `witness.x-${i}.example` }))] };
+  const r = verifyCheckpoint(cp, v02Jsonl("records-cp-4.jsonl"), many, v02LogPem);
+  assert.equal(r.result, "INVALID");
+  assert.deepEqual(r.reasons, ["checkpoint-chain-broken:prev_checkpoint_hash-mismatch"]);
+});
+
+test("0.2 link: a witness entry with no canonical form in the previous checkpoint does not affect the link", () => {
+  const cp4 = v02Json("cp-4.emitted.json");
+  const prev = v02Json("cp-3.emitted.json");
+  const odd = { ...prev, witnesses: [...prev.witnesses, { witness_id: "witness.odd.example", weight: Infinity }] }; // what JSON.parse makes of 1e400
+  const r = verifyCheckpoint(cp4, v02Jsonl("records-cp-4.jsonl"), odd, v02LogPem);
+  assert.equal(r.result, "VALID", r.reasons.join("; "));
+});
+
+test("0.1 link: an uncovered witness entry with no canonical form is set aside like any other; a body with none is reported", () => {
+  const cp2 = v02Json("cp-2.emitted.json");
+  const one = v02Json("cp-1.emitted.json");
+  const odd = { ...one, witnesses: [...one.witnesses, { witness_id: "witness.odd.example", weight: Infinity }] };
+  const r = verifyCheckpoint(cp2, v02Jsonl("records-cp-2.jsonl"), odd, v02LogPem);
+  assert.equal(r.result, "VALID", r.reasons.join("; "));
+  assert.ok(r.reasons.includes("PREV_WITNESS_ADDED_AFTER_LINK:witness.odd.example"));
+  const badBody = verifyCheckpoint(cp2, v02Jsonl("records-cp-2.jsonl"), { ...one, notes: { n: Infinity } }, v02LogPem);
+  assert.equal(badBody.result, "INVALID");
+  assert.ok(badBody.reasons[0].startsWith("prev-checkpoint-not-canonicalizable:"));
+});
+
+test("0.1 link over an empty witnesses array still verifies after an entry is merged (and over an absent member too)", () => {
+  // The case of mca-spec PR 3 review: the link was made when the previous checkpoint carried `"witnesses": []`.
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const pem = publicKey.export({ type: "spki", format: "pem" });
+  const sign = (body) => ({ ...body, signature: { alg: "ed25519", key_id: keyIdFromPublicKeyPem(pem), sig: cryptoSign(null, Buffer.from(canonicalize(body), "utf8"), privateKey).toString("base64url") } });
+  const prevSigned = sign(checkpointBody(v02Json("cp-1.emitted.json")));
+  const entry = v02Json("cp-1.emitted.json").witnesses[0];
+  for (const [label, asLinked] of [["empty array", { ...prevSigned, witnesses: [] }], ["absent member", prevSigned]]) {
+    const cp = { ...sign({ ...checkpointBody(v02Json("cp-2.emitted.json")), prev_checkpoint_hash: hashCanonical(asLinked) }), witnesses: [] };
+    const r = verifyCheckpoint(cp, v02Jsonl("records-cp-2.jsonl"), { ...prevSigned, witnesses: [entry] }, pem);
+    assert.equal(r.result, "VALID", `${label}: ${r.reasons.join("; ")}`);
+    assert.deepEqual(r.reasons, ["PREV_WITNESS_ADDED_AFTER_LINK:witness.a.example", "UNWITNESSED"], label);
+  }
+});
+
+test("a record with no canonical form is INVALID with its position, not an exception", () => {
+  const recs = v02Jsonl("records-cp-4.jsonl");
+  const r = verifyCheckpoint(v02Json("cp-4.emitted.json"), [{ ...recs[0], extra: Infinity }], v02Json("cp-3.emitted.json"), v02LogPem);
+  assert.equal(r.result, "INVALID");
+  assert.ok(r.reasons.some((x) => x.startsWith("record-not-canonicalizable:position-0:")), r.reasons.join("; "));
+});
+
+test("CLI: `mca checkpoint-hash` on a checkpoint with no canonical form is an input error (exit 2), not a stack trace", () => {
+  const cli = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "cli.js");
+  const dir = mkdtempSync(join(tmpdir(), "mca-"));
+  const f = join(dir, "cp.json");
+  writeFileSync(f, readFileSync(v02("cp-3.emitted.json"), "utf8").replace('"hash_alg"', '"weight": 1e400, "hash_alg"'));
+  const r = spawnSync(process.execPath, [cli, "checkpoint-hash", f], { encoding: "utf8" });
+  rmSync(dir, { recursive: true, force: true });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /^mca: error: .* has no canonical form: /);
+  assert.equal(r.stdout, "");
 });

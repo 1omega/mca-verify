@@ -8,7 +8,9 @@
     "mca": "src/cli.js"
   },
   "scripts": {
-    "test": "node test/gen-vectors.js && node --test test/verify.test.js"
+    "test": "node --test test/verify.test.js",
+    "gen-vectors": "node test/gen-vectors.js",
+    "test:regen": "node test/gen-vectors.js && node --test test/verify.test.js"
   },
   "engines": {
     "node": ">=18"

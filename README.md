@@ -27,7 +27,7 @@ mca verify inclusion --record f --proof f --checkpoint f
 mca checkpoint-hash <cp>
 ```
 
-Exit codes: `0` = VALID · `1` = INVALID · `2` = usage/IO error.
+Exit codes for `mca verify`: `0` = VALID · `1` = INVALID · `2` = usage/IO error. `mca checkpoint-hash` exits `0` when it printed a hash and `2` otherwise; it hashes without verifying, so `0` there says nothing about validity.
 
 Programmatic use (ESM):
 
@@ -45,17 +45,19 @@ Every check returns `{ result: "VALID" | "INVALID", reasons: string[] }` — nev
 | `UNWITNESSED` | Checkpoint's `witnesses` array is empty |
 | `WITNESSED:<witness_id>` | A witness countersignature verified against a supplied witness public key (`--witness-key`) |
 | `WITNESS_UNVERIFIED:<witness_id>` | A witness entry is present but no key for it was supplied; it was not checked |
-| `PREV_WITNESS_ADDED_AFTER_LINK:<witness_id>` | A v0.1 chain link reproduces only once this witness entry of the previous checkpoint is set aside: it was merged after the link was made. The previous checkpoint's signed content is what the link committed to |
+| `PREV_WITNESS_ADDED_AFTER_LINK:<witness_id>` | A v0.1 chain link reproduces only once this witness entry of the previous checkpoint is set aside: the link does not cover it. The usual cause is that the entry was merged after the link was made, but the match does not prove when it was merged. The previous checkpoint's signed content is what the link committed to |
 | `UNANCHORED` | No prior checkpoint supplied and the checkpoint is not genesis-anchored |
 | `SEALED_HISTORY_PRESENT` | The log sealed a damaged region (`notes.sealed_history`) — history before the seal is attested as sealed, not rewritten |
 | `PRIVATE_MODE` | HMAC (`hs256`) checkpoint — non-verifiable by third parties by design (spec §7) |
 
 ## Conformance suite
 
-`test/vectors/` is the **MCA v0.1 conformance suite**: a valid 5-record x402 commerce chain, a tampered-record chain, a sequence-gap chain, an Ed25519-signed checkpoint and a forged variant, an inclusion proof, and a matching evidence bundle. It regenerates deterministically on every run:
+`test/vectors/` is the **MCA v0.1 conformance suite**: a valid 5-record x402 commerce chain, a tampered-record chain, a sequence-gap chain, an Ed25519-signed checkpoint and a forged variant, an inclusion proof, and a matching evidence bundle. The vectors are checked in and `npm test` runs against them as they are:
 
 ```sh
-npm test   # node test/gen-vectors.js && node --test test/verify.test.js
+npm test              # node --test test/verify.test.js
+npm run gen-vectors   # regenerates the generated vectors with fresh keys; every signature and derived hash changes
+npm run test:regen    # regenerate, then test: use after changing test/gen-vectors.js
 ```
 
 Per spec Appendix B, an implementation claiming **Verifier** conformance MUST pass these vectors (positive chains, tampered-record, gap, forged-checkpoint, and the privacy/sealed-history cases).
@@ -81,11 +83,12 @@ Fixes [mca-spec issue #2](https://github.com/1omega/mca-spec/issues/2). In v0.1 
 
 - **`checkpoint_hash`** (`checkpointHash(cp)`, CLI `mca checkpoint-hash`): SHA-256 over the canonical checkpoint body, which is the checkpoint without its top-level `signature` and `witnesses` members. These are the bytes the operator signs and witnesses cosign. Adding, removing or reordering witness entries does not change it.
 - **The link form is selected by the linking checkpoint's own `mca_version`.** A `"0.1"` checkpoint links in the v0.1 full form. A `"0.2"` checkpoint links by `checkpoint_hash`. A log may switch in place: the first `"0.2"` checkpoint links to the last `"0.1"` one by its `checkpoint_hash`. A `"0.1"` checkpoint after a `"0.2"` one is INVALID.
-- **Late witnesses on v0.1 links.** When a v0.1 link does not match the previous checkpoint as supplied, the verifier checks whether it matches once some witness entries are set aside. If so the result is VALID with one `PREV_WITNESS_ADDED_AFTER_LINK:<witness_id>` caveat per late entry. The match still covers the previous checkpoint's whole body and operator signature.
+- **Late witnesses on v0.1 links.** When a v0.1 link does not match the previous checkpoint as supplied, the verifier checks whether it matches once some witness entries are set aside. If so the result is VALID with one `PREV_WITNESS_ADDED_AFTER_LINK:<witness_id>` caveat per entry set aside. The match still covers the previous checkpoint's whole body and operator signature. It shows that the link does not cover those entries, not when they were merged. The search is bounded: every ordered subset is tried up to 12 entries, only leading runs up to 64, and nothing beyond that. When the bound stops the search, a mismatch is reported as `checkpoint-chain-broken:prev_checkpoint_hash-mismatch:witness-search-incomplete:<n>-entries`; check that link against the previous checkpoint exactly as it stood when the link was made.
 - **Cached copies.** A v0.1 link cannot be checked from a copy of the previous checkpoint taken before a covered witness entry was merged. Fetch the served copy, confirm with `mca checkpoint-hash` that it is the same checkpoint as the cached one, and verify against it. v0.2 links need none of this.
 - New reasons: `checkpoint-chain-broken:link-is-the-0.1-full-form-in-a-0.2-checkpoint`, `…:link-is-the-0.2-signed-body-form-in-a-0.1-checkpoint`, `…:version-downgrade:0.1-after-0.2`, `…:prev-checkpoint-is-from-another-log`.
 - New vectors: `test/vectors/v02/` (a four-checkpoint log that crosses the transition, each checkpoint as emitted and as served later, with `expected.json`), and production checkpoints `rh1-cp-9..15` with both witness keys, captured 2026-11-18.
-- **No existing result changes.** Every v0.1 checkpoint that verified with 0.1.1 verifies with the same reasons. The only inputs that change are v0.1 links broken by a late witness merge, which 0.1.1 reports as a broken chain.
+- **Compatibility.** On the production chain `rh1-cp-5..15`, and on every v0.1 vector in this repository, the result and reasons are identical to 0.1.1. Three kinds of input change: a v0.1 link that reproduces once late witness entries are set aside is now VALID with the caveat (0.1.1: broken chain); a previous checkpoint from another log is now INVALID even if its hash matches the link (0.1.1 did not look at its `log_id`); and a record or checkpoint with no canonical form is reported as INVALID or as an input error instead of an uncaught exception.
+- `npm test` no longer regenerates the vectors, so it checks the checked-in bytes and leaves the worktree clean; `npm run gen-vectors` and `npm run test:regen` regenerate.
 
 ## Changes in 0.1.1 (spec addendum 0.1.1)
 

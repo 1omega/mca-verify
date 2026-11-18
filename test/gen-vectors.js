@@ -1,10 +1,13 @@
 /**
- * Deterministically regenerates test/vectors/ — the MCA v0.1 conformance
- * suite. Run via `npm test` (always regenerates before the test run, so the
- * tests can never silently depend on stale artifacts).
+ * Regenerates the generated part of test/vectors/ — the MCA conformance
+ * suite. Run it with `npm run gen-vectors`, or with `npm run test:regen` to
+ * regenerate and then test (use that after changing this file, so the tests
+ * cannot depend on stale artifacts). `npm test` does NOT run it: the vectors
+ * are checked in, other implementations copy them, and a plain test run must
+ * check those bytes and leave the worktree clean.
  *
- * The Ed25519 keypair is generated fresh on each run; everything else is
- * fixed. Determinism of the *structure* (5-record chain, tampered/gap
+ * The Ed25519 keypairs are generated fresh on each run, so every signature
+ * and every hash derived from one changes; everything else is fixed. Determinism of the *structure* (5-record chain, tampered/gap
  * variants, checkpoint, inclusion path, evidence bundle) is what matters —
  * tests only reference relationships the generator itself establishes.
  */

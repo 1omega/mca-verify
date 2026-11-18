@@ -12,7 +12,9 @@
  *       (prints the v0.2 checkpoint_hash: the same for every copy of a Checkpoint,
  *        whatever witness entries the copy carries)
  *
- * Exit codes: 0 = VALID, 1 = INVALID, 2 = usage/IO error.
+ * Exit codes for `mca verify`: 0 = VALID, 1 = INVALID, 2 = usage/IO error.
+ * `mca checkpoint-hash` exits 0 when it printed a hash and 2 otherwise. It
+ * hashes; it does not verify. Exit 0 there says nothing about validity.
  */
 
 import { readFileSync } from "node:fs";
@@ -83,7 +85,13 @@ if (verb === "checkpoint-hash") {
   if (!sub || rest.length > 0) die("usage: mca checkpoint-hash <cp>");
   const cp = readJson(sub);
   if (typeof cp !== "object" || cp === null || Array.isArray(cp)) die(`${sub} is not a JSON object`);
-  console.log(checkpointHash(cp));
+  let h;
+  try {
+    h = checkpointHash(cp);
+  } catch (e) {
+    die(`${sub} has no canonical form: ${e.message}`);
+  }
+  console.log(h);
   process.exit(0);
 }
 if (verb !== "verify" || !sub) {
